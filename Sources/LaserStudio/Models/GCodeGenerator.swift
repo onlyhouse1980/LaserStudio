@@ -237,38 +237,60 @@ enum GCodeGenerator {
         var contours: [[CGPoint]] = []
         var points: [CGPoint] = []
         var current = CGPoint.zero
-        path.applyWithBlock { elementPointer in
-            let element = elementPointer.pointee
-            switch element.type {
-            case .moveToPoint:
-                if points.count > 1 { contours.append(points) }
-                points = [element.points[0]]; current = element.points[0]
-            case .addLineToPoint:
-                current = element.points[0]; points.append(current)
-            case .addQuadCurveToPoint:
-                let start = current, control = element.points[0], end = element.points[1]
-                for step in 1...8 {
-                    let t = CGFloat(step) / 8, u = 1 - t
-                    points.append(CGPoint(x: u*u*start.x + 2*u*t*control.x + t*t*end.x, y: u*u*start.y + 2*u*t*control.y + t*t*end.y))
-                }
-                current = end
-            case .addCurveToPoint:
-                let start = current, c1 = element.points[0], c2 = element.points[1], end = element.points[2]
-                for step in 1...10 {
-                    let t = CGFloat(step) / 10, u = 1 - t
-                    points.append(CGPoint(x: u*u*u*start.x + 3*u*u*t*c1.x + 3*u*t*t*c2.x + t*t*t*end.x,
-                                          y: u*u*u*start.y + 3*u*u*t*c1.y + 3*u*t*t*c2.y + t*t*t*end.y))
-                }
-                current = end
-            case .closeSubpath:
-                if let first = points.first, points.last != first { points.append(first) }
-                if points.count > 1 { contours.append(points) }
-                points = []
-            @unknown default: break
-            }
+        let appendElement: (UnsafePointer<CGPathElement>) -> Void = { elementPointer in
+            appendPathElement(elementPointer.pointee, contours: &contours, points: &points, current: &current)
         }
+        path.applyWithBlock(appendElement)
         if points.count > 1 { contours.append(points) }
         return contours
+    }
+
+    private static func appendPathElement(_ element: CGPathElement,
+                                          contours: inout [[CGPoint]],
+                                          points: inout [CGPoint],
+                                          current: inout CGPoint) {
+        switch element.type {
+        case .moveToPoint:
+            if points.count > 1 { contours.append(points) }
+            current = element.points[0]
+            points = [current]
+        case .addLineToPoint:
+            current = element.points[0]
+            points.append(current)
+        case .addQuadCurveToPoint:
+            let start = current
+            let control = element.points[0]
+            let end = element.points[1]
+            for step in 1...8 {
+                let t = CGFloat(step) / 8
+                let u = 1 - t
+                let x = u * u * start.x + 2 * u * t * control.x + t * t * end.x
+                let y = u * u * start.y + 2 * u * t * control.y + t * t * end.y
+                points.append(CGPoint(x: x, y: y))
+            }
+            current = end
+        case .addCurveToPoint:
+            let start = current
+            let control1 = element.points[0]
+            let control2 = element.points[1]
+            let end = element.points[2]
+            for step in 1...10 {
+                let t = CGFloat(step) / 10
+                let u = 1 - t
+                let x = u * u * u * start.x + 3 * u * u * t * control1.x +
+                    3 * u * t * t * control2.x + t * t * t * end.x
+                let y = u * u * u * start.y + 3 * u * u * t * control1.y +
+                    3 * u * t * t * control2.y + t * t * t * end.y
+                points.append(CGPoint(x: x, y: y))
+            }
+            current = end
+        case .closeSubpath:
+            if let first = points.first, points.last != first { points.append(first) }
+            if points.count > 1 { contours.append(points) }
+            points = []
+        @unknown default:
+            break
+        }
     }
 
     private static func hatch(for object: DesignObject, spacing: Double, feed: Double, power: Int) -> [String] {
