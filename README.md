@@ -1,4 +1,5 @@
 # LaserStudio
+<img width="300" height="300" alt="laserstudioicon" src="https://github.com/user-attachments/assets/5aae92f3-8cc4-496f-979d-a979c2346388" />
 
 LaserStudio is a macOS design and job sender for Longer Ray5 laser engravers using GRBL over USB.
 
