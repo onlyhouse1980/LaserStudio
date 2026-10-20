@@ -53,6 +53,9 @@ TXT
 ln -s /Applications "$STAGING_DIR/Applications"
 
 plutil -lint "$APP_BUNDLE/Contents/Info.plist"
+SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+codesign --force --deep --options runtime --timestamp=none --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+codesign --verify --deep --strict "$APP_BUNDLE"
 rm -f "$DMG_PATH"
 hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING_DIR" -format UDZO -ov "$DMG_PATH"
 hdiutil verify "$DMG_PATH"

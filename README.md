@@ -2,6 +2,10 @@
 
 LaserStudio is a macOS design and job sender for Longer Ray5 laser engravers using GRBL over USB.
 
+**A LightBurn alternative for macOS** — a native, free laser engraver software option for Mac users who want to design, position (with camera preview), and send jobs to GRBL laser cutters and engravers. Not affiliated with LightBurn.
+
+Keywords: LightBurn alternative, LightBurn macOS alternative, Mac laser engraver software, GRBL controller for Mac, Longer Ray5 software, laser cutter software macOS.
+
 ## Download
 
 Download the latest macOS installer from [GitHub Releases](https://github.com/onlyhouse1980/LaserStudio/releases/latest). The release includes `LaserStudio-macOS.dmg`.
