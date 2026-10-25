@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="LaserStudio"
 BUNDLE_ID="studio.laserstudio.app"
-APP_VERSION="${APP_VERSION:-1.0.0}"
+APP_VERSION="${APP_VERSION:-1.1.0}"
 MIN_SYSTEM_VERSION="14.0"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
