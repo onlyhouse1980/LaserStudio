@@ -98,17 +98,7 @@ struct ContentView: View {
             } else {
                 selectedIDs = []
             }
-            guard let newSelection, objects.first(where: { $0.id == newSelection })?.kind == .text else {
-                textInputFocused = false
-                return
-            }
             textInputFocused = false
-            DispatchQueue.main.async {
-                textInputFocused = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
-                }
-            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .newProject)) { _ in newProject() }
         .onReceive(NotificationCenter.default.publisher(for: .exportJob)) { _ in exportJob() }
@@ -716,9 +706,10 @@ struct ContentView: View {
                             Spacer()
                             Button {
                                 let ids = selectedIDs.isEmpty ? (selection.map { Set([$0]) } ?? []) : selectedIDs
-                                objects.removeAll { ids.contains($0.id) }
-                                selection = objects.first?.id
-                                selectedIDs = selection.map { Set([$0]) } ?? []
+                                objects.removeAll { ids.contains($0.id) && !$0.isLocked }
+                                selection = nil
+                                selectedIDs = []
+                                status = "Deleted selected object\(ids.count == 1 ? "" : "s")"
                             } label: { Image(systemName: "trash").font(.system(size: 10)) }
                                 .disabled(selection == nil && selectedIDs.isEmpty)
                                 .hoverToolName(selectedIDs.count > 1 ? "Delete Selected Layers" : "Delete Selected Layer", edge: .leading)
@@ -729,7 +720,6 @@ struct ContentView: View {
                             if sel.kind == .text {
                                 TextField("Text", text: selectedTextBinding)
                                     .textFieldStyle(.roundedBorder)
-                                    .focused($textInputFocused)
                                     .onSubmit { textInputFocused = false }
                             }
                             coordinateRow("X", value: \DesignObject.x, unit: "mm")
@@ -1191,10 +1181,8 @@ struct ContentView: View {
         selection = textObject.id
         selectedIDs = [textObject.id]
         activeTool = "Select"
+        textInputFocused = false
         status = "Added Helvetica text layer"
-        DispatchQueue.main.async {
-            textInputFocused = true
-        }
     }
     private func commitPendingHistory() {
         guard let snapshot = pendingUndoSnapshot else { return }

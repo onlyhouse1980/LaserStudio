@@ -42,6 +42,7 @@ struct CanvasArea: View {
     @State private var showingOffsetSheet = false
     @State private var showingGridArraySheet = false
     @State private var showingCircularArraySheet = false
+    @State private var selectedNode: (objectID: UUID, subpathIndex: Int, pointIndex: Int)?
 
     private enum ResizeHandle: CaseIterable {
         case topLeft, topRight, bottomLeft, bottomRight
@@ -128,16 +129,21 @@ struct CanvasArea: View {
                             .allowsHitTesting(false)
                     }
                     if activeTool == "Node edit" && object.kind == .path {
+                        let currentSelectedNode = selectedNode
                         Canvas { ctx, _ in
                             let center = CGPoint(x: object.x + object.width / 2, y: object.y + object.height / 2)
-                            for sub in object.resolvedSubpaths {
-                                for pt in sub.points {
+                            for (sIdx, sub) in object.resolvedSubpaths.enumerated() {
+                                for (pIdx, pt) in sub.points.enumerated() {
                                     let ws = rotatePoint(CGPoint(x: object.x + pt.x, y: object.y + pt.y), around: center, degrees: object.rotation)
                                     let sx = origin.x + ws.x * scale
                                     let sy = origin.y + ws.y * scale
-                                    let rect = CGRect(x: sx - 3.5, y: sy - 3.5, width: 7, height: 7)
-                                    ctx.fill(Path(rect), with: .color(.yellow))
-                                    ctx.stroke(Path(rect), with: .color(.black), lineWidth: 1)
+                                    let isNodeSelected = currentSelectedNode?.objectID == object.id &&
+                                        currentSelectedNode?.subpathIndex == sIdx &&
+                                        currentSelectedNode?.pointIndex == pIdx
+                                    let size: CGFloat = isNodeSelected ? 9 : 7
+                                    let rect = CGRect(x: sx - size / 2, y: sy - size / 2, width: size, height: size)
+                                    ctx.fill(Path(rect), with: .color(isNodeSelected ? .orange : .yellow))
+                                    ctx.stroke(Path(rect), with: .color(isNodeSelected ? .white : .black), lineWidth: isNodeSelected ? 1.5 : 1)
                                 }
                             }
                         }
@@ -311,11 +317,13 @@ struct CanvasArea: View {
                         if let oIdx = objects.firstIndex(where: { $0.id == obj.id }) {
                             objects[oIdx].pathSubpaths = subs
                         }
+                        selectedNode = (obj.id, sIdx, pIdx)
                         interaction = .moveNode(obj.id, sIdx, pIdx)
                         return
                     }
                 }
             }
+            selectedNode = nil
         }
 
         if let bounds = bounds(for: currentObjects), !currentObjects.isEmpty {
@@ -759,14 +767,28 @@ struct CanvasArea: View {
     }
 
     private func selectObject(_ object: DesignObject) {
+        let isShiftHeld = NSEvent.modifierFlags.contains(.shift)
         let currentSelection = selectedLayerIDs()
+        let targetIDs: Set<UUID>
+        if let groupID = object.groupID {
+            targetIDs = Set(objects.filter { $0.groupID == groupID }.map(\.id))
+        } else {
+            targetIDs = [object.id]
+        }
+        if isShiftHeld {
+            var updated = currentSelection
+            if updated.contains(object.id) {
+                updated.subtract(targetIDs)
+            } else {
+                updated.formUnion(targetIDs)
+            }
+            selectedIDs = updated
+            selection = updated.contains(object.id) ? object.id : updated.first
+            return
+        }
         selection = object.id
         if currentSelection.contains(object.id) { return }
-        if let groupID = object.groupID {
-            selectedIDs = Set(objects.filter { $0.groupID == groupID }.map(\.id))
-        } else {
-            selectedIDs = [object.id]
-        }
+        selectedIDs = targetIDs
     }
 
     private func groupSelectedLayers() {
@@ -1106,11 +1128,52 @@ struct CanvasArea: View {
 
     private func deleteSelectedLayers() {
         let ids = selectedLayerIDs()
+        guard !ids.isEmpty else {
+            status = "No object selected to delete"
+            return
+        }
+        let beforeCount = objects.count
         objects.removeAll { ids.contains($0.id) && !$0.isLocked }
+        let removedCount = beforeCount - objects.count
         selectedIDs = []
-        selection = objects.last?.id
+        selection = nil
+        selectedNode = nil
         showingContextMenu = false
-        status = "Deleted selected object\(ids.count == 1 ? "" : "s")"
+        if removedCount > 0 {
+            status = "Deleted \(removedCount) object\(removedCount == 1 ? "" : "s")"
+        } else {
+            status = "Selected object is locked — unlock (⌘L) to delete"
+        }
+    }
+
+    private func deleteSelectedNode() -> Bool {
+        guard activeTool == "Node edit",
+              let node = selectedNode,
+              let idx = objects.firstIndex(where: { $0.id == node.objectID && !$0.isLocked }) else {
+            return false
+        }
+        var subs = objects[idx].resolvedSubpaths
+        guard node.subpathIndex < subs.count else { return false }
+        var pts = subs[node.subpathIndex].points
+        let minPoints = subs[node.subpathIndex].isClosed ? 4 : 3
+        guard pts.count >= minPoints, node.pointIndex < pts.count else {
+            if subs.count > 1 {
+                subs.remove(at: node.subpathIndex)
+                objects[idx].pathSubpaths = subs
+                objects[idx].pathPoints = subs.first?.points ?? []
+                selectedNode = nil
+                status = "Deleted subpath"
+                return true
+            }
+            return false
+        }
+        pts.remove(at: node.pointIndex)
+        subs[node.subpathIndex].points = pts
+        objects[idx].pathSubpaths = subs
+        objects[idx].pathPoints = subs.first?.points ?? []
+        selectedNode = (node.objectID, node.subpathIndex, max(0, min(node.pointIndex, pts.count - 1)))
+        status = "Deleted path node"
+        return true
     }
 
     private func convertSelectedToPath() {
@@ -1235,25 +1298,47 @@ struct CanvasArea: View {
     private func alignSelected(_ edge: AlignmentEdge) {
         let ids = selectedLayerIDs()
         let selected = objects.filter { ids.contains($0.id) }
-        guard selected.count >= 2, let b = bounds(for: selected) else {
+        guard !selected.isEmpty else {
             showingContextMenu = false
             return
         }
+        let targetBounds: CGRect
+        if selected.count >= 2, let b = bounds(for: selected) {
+            targetBounds = b
+        } else {
+            targetBounds = CGRect(x: 0, y: 0, width: workspace.width, height: workspace.height)
+        }
         for idx in objects.indices where ids.contains(objects[idx].id) && !objects[idx].isLocked {
             switch edge {
-            case .left: objects[idx].x = Double(b.minX)
-            case .right: objects[idx].x = Double(b.maxX) - objects[idx].width
-            case .top: objects[idx].y = Double(b.minY)
-            case .bottom: objects[idx].y = Double(b.maxY) - objects[idx].height
-            case .centerH: objects[idx].x = Double(b.midX) - objects[idx].width / 2
-            case .centerV: objects[idx].y = Double(b.midY) - objects[idx].height / 2
+            case .left: objects[idx].x = Double(targetBounds.minX)
+            case .right: objects[idx].x = Double(targetBounds.maxX) - objects[idx].width
+            case .top: objects[idx].y = Double(targetBounds.minY)
+            case .bottom: objects[idx].y = Double(targetBounds.maxY) - objects[idx].height
+            case .centerH: objects[idx].x = Double(targetBounds.midX) - objects[idx].width / 2
+            case .centerV: objects[idx].y = Double(targetBounds.midY) - objects[idx].height / 2
             }
         }
         showingContextMenu = false
-        status = "Aligned selection"
+        status = selected.count >= 2 ? "Aligned \(selected.count) objects" : "Aligned object to workspace"
     }
 
     private func nudgeSelected(dx: Double, dy: Double) {
+        if activeTool == "Node edit",
+           let node = selectedNode,
+           let idx = objects.firstIndex(where: { $0.id == node.objectID && !$0.isLocked }) {
+            var subs = objects[idx].resolvedSubpaths
+            if node.subpathIndex < subs.count, node.pointIndex < subs[node.subpathIndex].points.count {
+                let oldPt = subs[node.subpathIndex].points[node.pointIndex]
+                subs[node.subpathIndex].points[node.pointIndex] = CGPoint(
+                    x: max(0, min(objects[idx].width, oldPt.x + dx)),
+                    y: max(0, min(objects[idx].height, oldPt.y + dy))
+                )
+                objects[idx].pathSubpaths = subs
+                objects[idx].pathPoints = subs.first?.points ?? []
+                status = String(format: "Nudged node (%.2f, %.2f mm)", dx, dy)
+                return
+            }
+        }
         let ids = selectedLayerIDs()
         guard !ids.isEmpty else { return }
         for idx in objects.indices where ids.contains(objects[idx].id) && !objects[idx].isLocked {
@@ -1283,6 +1368,11 @@ struct CanvasArea: View {
                 status = "Canceled drawing"
                 return true
             }
+            if selectedNode != nil {
+                selectedNode = nil
+                status = "Cleared node selection"
+                return true
+            }
             if activeTool != "Select" {
                 activeTool = "Select"
                 status = "Select tool"
@@ -1294,9 +1384,11 @@ struct CanvasArea: View {
             return true
         }
 
-        // Delete / Forward Delete
-        if !cmd && !opt && (keyCode == 51 || keyCode == 117) {
-            guard !selectedLayerIDs().isEmpty else { return false }
+        // Delete / Backspace / Forward Delete (supports Delete, Fn+Delete, and Cmd+Delete)
+        if !opt && (keyCode == 51 || keyCode == 117 || chars == "\u{7f}" || chars == "\u{f728}") {
+            if deleteSelectedNode() {
+                return true
+            }
             deleteSelectedLayers()
             return true
         }
@@ -1358,6 +1450,15 @@ struct CanvasArea: View {
                     status = "Selected all \(visible.count) objects"
                 }
                 return true
+            case "b":
+                let ids = selectedLayerIDs()
+                let textIndices = objects.indices.filter { ids.contains(objects[$0].id) && objects[$0].kind == .text }
+                if !textIndices.isEmpty {
+                    let enable = !objects[textIndices[0]].fontBold
+                    for idx in textIndices { objects[idx].fontBold = enable }
+                    status = enable ? "Enabled Bold" : "Disabled Bold"
+                    return true
+                }
             case "i":
                 if shift {
                     let current = selectedLayerIDs()
@@ -1366,6 +1467,15 @@ struct CanvasArea: View {
                     selection = inverted.first?.id
                     status = "Inverted selection (\(inverted.count) objects)"
                     return true
+                } else {
+                    let ids = selectedLayerIDs()
+                    let textIndices = objects.indices.filter { ids.contains(objects[$0].id) && objects[$0].kind == .text }
+                    if !textIndices.isEmpty {
+                        let enable = !objects[textIndices[0]].fontItalic
+                        for idx in textIndices { objects[idx].fontItalic = enable }
+                        status = enable ? "Enabled Italic" : "Disabled Italic"
+                        return true
+                    }
                 }
             case "g":
                 if shift {
@@ -1375,6 +1485,16 @@ struct CanvasArea: View {
                 }
                 return true
             case "u":
+                if shift {
+                    let ids = selectedLayerIDs()
+                    let textIndices = objects.indices.filter { ids.contains(objects[$0].id) && objects[$0].kind == .text }
+                    if !textIndices.isEmpty {
+                        let enable = !objects[textIndices[0]].fontUnderline
+                        for idx in textIndices { objects[idx].fontUnderline = enable }
+                        status = enable ? "Enabled Underline" : "Disabled Underline"
+                        return true
+                    }
+                }
                 ungroupSelectedLayers()
                 return true
             case "p":
@@ -1397,15 +1517,18 @@ struct CanvasArea: View {
                 status = "Draw Rectangle tool"
                 return true
             case "e":
-                activeTool = "Ellipse"
-                status = "Draw Ellipse tool"
+                if let firstID = selectedLayerIDs().first {
+                    onOpenCutSettings?(firstID)
+                } else {
+                    activeTool = "Circle"
+                    status = "Draw Ellipse tool"
+                }
                 return true
             case "t":
                 activeTool = "Text"
-                status = "Create/Edit Text tool"
+                status = "Create / Edit Text tool"
                 return true
             case "f":
-                activeTool = "Offset"
                 showingOffsetSheet = true
                 return true
             case "m":
@@ -1447,7 +1570,12 @@ struct CanvasArea: View {
                 showingOffsetSheet = true
                 return true
             case "b":
-                breakApartSelectedVectors()
+                let ids = selectedLayerIDs()
+                if objects.contains(where: { ids.contains($0.id) && $0.kind != .image }) {
+                    breakApartSelectedVectors()
+                } else {
+                    convertSelectedToBitmap()
+                }
                 return true
             case "u", "+":
                 performBoolean(.union)
@@ -1466,6 +1594,10 @@ struct CanvasArea: View {
         // Single-key LightBurn shortcuts (no Cmd/Opt)
         if !cmd && !opt {
             switch chars {
+            case "v", "s":
+                activeTool = "Select"
+                status = "Select tool"
+                return true
             case "p":
                 centerSelectedInPage()
                 return true
@@ -1487,11 +1619,17 @@ struct CanvasArea: View {
             case "e":
                 alignSelected(.centerV)
                 return true
-            case ".":
+            case ".", ">":
                 rotateSelected(by: 90)
                 return true
-            case ",":
+            case ",", "<":
                 rotateSelected(by: -90)
+                return true
+            case "]":
+                reorderSelected(toFront: true)
+                return true
+            case "[":
+                reorderSelected(toFront: false)
                 return true
             default:
                 break
@@ -1742,9 +1880,72 @@ private struct CanvasMouseInput: NSViewRepresentable {
         private var lastMiddlePoint: CGPoint?
         private var isSpacebarPressed = false
         private var lastSpaceDragPoint: CGPoint?
+        private var keyEventMonitor: Any?
 
         override var isOpaque: Bool { false }
         override var acceptsFirstResponder: Bool { true }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            installKeyMonitorIfNeeded()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let window = self.window else { return }
+                if !(window.firstResponder is NSText) {
+                    window.makeFirstResponder(self)
+                }
+            }
+        }
+
+        deinit {
+            if let monitor = keyEventMonitor {
+                NSEvent.removeMonitor(monitor)
+            }
+        }
+
+        private func installKeyMonitorIfNeeded() {
+            guard keyEventMonitor == nil else { return }
+            keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
+                guard let self,
+                      let window = self.window,
+                      event.window === window,
+                      window.isKeyWindow,
+                      window.attachedSheet == nil else {
+                    return event
+                }
+
+                // When the user is actively typing in a TextField (NSTextView field editor),
+                // allow all text editing keys (Delete, arrows, letters, Copy/Paste) to reach the text field.
+                if let responder = window.firstResponder, responder is NSText {
+                    if event.type == .keyDown && (event.keyCode == 53 || event.keyCode == 36 || event.keyCode == 76) {
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self else { return }
+                            self.window?.makeFirstResponder(self)
+                        }
+                        if event.keyCode == 53 {
+                            return nil
+                        }
+                    }
+                    return event
+                }
+
+                if event.type == .keyDown {
+                    if event.keyCode == 49 { // Spacebar
+                        self.isSpacebarPressed = true
+                        return nil
+                    }
+                    if self.onKeyDown?(event) == true {
+                        return nil
+                    }
+                } else if event.type == .keyUp {
+                    if event.keyCode == 49 {
+                        self.isSpacebarPressed = false
+                        self.lastSpaceDragPoint = nil
+                        return nil
+                    }
+                }
+                return event
+            }
+        }
 
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
@@ -1759,15 +1960,23 @@ private struct CanvasMouseInput: NSViewRepresentable {
             return CGPoint(x: point.x, y: bounds.height - point.y)
         }
 
+        private func focusCanvas() {
+            guard let window else { return }
+            if window.firstResponder is NSText {
+                window.makeFirstResponder(nil)
+            }
+            window.makeFirstResponder(self)
+        }
+
         private func handleDown(_ event: NSEvent, button: CanvasMouseButton) {
             let point = canvasPoint(for: event)
-            window?.makeFirstResponder(self)
+            focusCanvas()
             onDown?(point, button)
         }
 
         override func mouseDown(with event: NSEvent) {
             let pt = canvasPoint(for: event)
-            window?.makeFirstResponder(self)
+            focusCanvas()
             if isSpacebarPressed {
                 lastSpaceDragPoint = pt
                 return
