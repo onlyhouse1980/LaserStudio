@@ -331,7 +331,7 @@ private struct ManualDiagramView: View {
             ("Rectangle", "Draw Rectangle", "Create rectangles or rounded-corner boxes"),
             ("Circle", "Draw Ellipse / Circle", "Create circles and ellipses"),
             ("Polygon", "Regular Polygon", "Create 3 to 24-sided polygons"),
-            ("Text", "Create / Edit Text", "Place vector text with Bold/Italic/Underline/Strikethrough"),
+            ("Text", "Create / Edit Text", "Add a Helvetica text layer with 'Text' and Bold/Italic/Underline/Strikethrough"),
             ("Node edit", "Edit Nodes", "Move vertices, delete nodes, or convert shapes to paths"),
             ("Add Tabs", "Add Tabs / Bridges", "Place holding tabs on cut paths so parts stay in place"),
             ("Measure", "Measure Distance", "Drag between two points to inspect distance, ΔX, and ΔY"),

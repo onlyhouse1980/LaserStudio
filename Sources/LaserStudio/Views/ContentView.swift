@@ -330,7 +330,7 @@ struct ContentView: View {
                 toolButton("Rectangle", help: "Draw Rectangle — Drag to create rectangles or squares")
                 toolButton("Circle", help: "Draw Ellipse / Circle — Drag to create ellipses or circles")
                 toolButton("Polygon", help: "Draw Regular Polygon — Drag to create multi-sided polygons (3–24 sides)")
-                toolButton("Text", help: "Create / Edit Text — Click on the workspace to place vector text")
+                toolButton("Text", help: "Create / Edit Text — Add or place a Helvetica text layer on the workspace")
                 Divider().padding(.vertical, 3).opacity(0.3)
 
                 toolButton("Node edit", help: "Edit Nodes — Drag path vertices directly or click a shape to convert it to editable nodes")
@@ -391,6 +391,10 @@ struct ContentView: View {
         return Button {
             if name == "Camera" {
                 showCameraPreview = true
+                return
+            }
+            if name == "Text" {
+                addTextLayer()
                 return
             }
             activeTool = name
@@ -1162,6 +1166,35 @@ struct ContentView: View {
     private func addShape() {
         activeTool = "Rectangle"
         status = "Drag on the workspace to draw a rectangle"
+    }
+    private func addTextLayer() {
+        let width = 120.0
+        let height = 28.0
+        let ws = activeMachine.workspace
+        let textCount = objects.filter { $0.kind == .text }.count
+        let offset = Double(textCount % 6) * 8.0
+        let x = max(0, min(ws.width - width, (ws.width - width) / 2 + offset))
+        let y = max(0, min(ws.height - height, (ws.height - height) / 2 + offset))
+        let textObject = DesignObject(
+            kind: .text,
+            x: x,
+            y: y,
+            width: width,
+            height: height,
+            label: "Text",
+            color: activeSwatch.color,
+            layerMode: .line,
+            isToolLayer: activeIsToolLayer,
+            fontFamily: "Helvetica"
+        )
+        objects.append(textObject)
+        selection = textObject.id
+        selectedIDs = [textObject.id]
+        activeTool = "Select"
+        status = "Added Helvetica text layer"
+        DispatchQueue.main.async {
+            textInputFocused = true
+        }
     }
     private func commitPendingHistory() {
         guard let snapshot = pendingUndoSnapshot else { return }

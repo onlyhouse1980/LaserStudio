@@ -195,6 +195,36 @@ struct LightBurnToolIcon: View {
                     ctx.fill(Path(ellipseIn: dot), with: .color(i == 0 ? accentColor : strokeColor))
                 }
 
+            case "Text":
+                var tPath = Path()
+                tPath.move(to: CGPoint(x: w * 0.22, y: h * 0.22))
+                tPath.addLine(to: CGPoint(x: w * 0.78, y: h * 0.22))
+                tPath.move(to: CGPoint(x: w * 0.50, y: h * 0.22))
+                tPath.addLine(to: CGPoint(x: w * 0.50, y: h * 0.80))
+                tPath.move(to: CGPoint(x: w * 0.36, y: h * 0.80))
+                tPath.addLine(to: CGPoint(x: w * 0.64, y: h * 0.80))
+                ctx.stroke(tPath, with: .color(strokeColor), lineWidth: 2.0)
+
+            case "Measure":
+                var ruler = Path()
+                ruler.move(to: CGPoint(x: w * 0.18, y: h * 0.74))
+                ruler.addLine(to: CGPoint(x: w * 0.82, y: h * 0.26))
+                ctx.stroke(ruler, with: .color(strokeColor), lineWidth: 1.8)
+                for t in [0.2, 0.5, 0.8] {
+                    let px = w * (0.18 + 0.64 * t)
+                    let py = h * (0.74 - 0.48 * t)
+                    var tick = Path()
+                    tick.move(to: CGPoint(x: px - 2.5, y: py - 3.0))
+                    tick.addLine(to: CGPoint(x: px + 2.5, y: py + 3.0))
+                    ctx.stroke(tick, with: .color(accentColor), lineWidth: 1.5)
+                }
+
+            case "Camera":
+                let body = CGRect(x: w * 0.16, y: h * 0.30, width: w * 0.68, height: h * 0.48)
+                ctx.stroke(Path(roundedRect: body, cornerRadius: 3), with: .color(strokeColor), lineWidth: 1.6)
+                let lens = CGRect(x: w * 0.36, y: h * 0.40, width: w * 0.28, height: h * 0.28)
+                ctx.stroke(Path(ellipseIn: lens), with: .color(accentColor), lineWidth: 1.5)
+
             default:
                 break
             }

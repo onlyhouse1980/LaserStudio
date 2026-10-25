@@ -572,7 +572,7 @@ struct CanvasArea: View {
         let width = max(1, abs(end.x - start.x)), height = max(1, abs(end.y - start.y))
         switch activeTool {
         case "Text":
-            let item = DesignObject(kind: .text, x: min(workspace.width - 20, max(0, start.x)), y: min(workspace.height - 20, max(0, start.y)), width: 100, height: 24, label: "New text", color: activeLayerColor, isToolLayer: activeIsToolLayer)
+            let item = DesignObject(kind: .text, x: min(workspace.width - 20, max(0, start.x)), y: min(workspace.height - 20, max(0, start.y)), width: 100, height: 24, label: "Text", color: activeLayerColor, isToolLayer: activeIsToolLayer, fontFamily: "Helvetica")
             objects.append(item); selection = item.id; selectedIDs = [item.id]; activeTool = "Select"; status = "Placed text · Select tool active"
         case "Rectangle", "Circle", "Polygon":
             let kind: DesignObject.Kind = activeTool == "Rectangle" ? .rectangle : (activeTool == "Circle" ? .circle : .polygon)
