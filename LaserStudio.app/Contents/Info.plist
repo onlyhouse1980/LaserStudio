@@ -4,8 +4,11 @@
 <key>CFBundleExecutable</key><string>LaserStudio</string>
 <key>CFBundleIdentifier</key><string>studio.laserstudio.app</string>
 <key>CFBundleName</key><string>LaserStudio</string>
+<key>CFBundleDisplayName</key><string>LaserStudio</string>
 <key>CFBundleIconFile</key><string>AppIcon.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>1.0.0</string>
+<key>CFBundleVersion</key><string>1</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSCameraUsageDescription</key><string>LaserStudio uses the camera to preview the work area for positioning designs.</string>
 <key>NSPrincipalClass</key><string>NSApplication</string>

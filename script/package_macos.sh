@@ -56,9 +56,16 @@ plutil -lint "$APP_BUNDLE/Contents/Info.plist"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 codesign --force --deep --options runtime --timestamp=none --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 codesign --verify --deep --strict "$APP_BUNDLE"
-rm -f "$DMG_PATH"
+
+# Keep dist/LaserStudio.app and root LaserStudio.app in sync with the release build
+rm -rf "$DIST_DIR/$APP_NAME.app" "$ROOT_DIR/$APP_NAME.app"
+cp -R "$APP_BUNDLE" "$DIST_DIR/$APP_NAME.app"
+cp -R "$APP_BUNDLE" "$ROOT_DIR/$APP_NAME.app"
+
+rm -f "$DMG_PATH" "$ROOT_DIR/$APP_NAME-macOS.dmg"
 hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING_DIR" -format UDZO -ov "$DMG_PATH"
 hdiutil verify "$DMG_PATH"
+cp "$DMG_PATH" "$ROOT_DIR/$APP_NAME-macOS.dmg"
 rm -rf "$STAGING_DIR"
 
-echo "Created $DMG_PATH"
+echo "Created $DMG_PATH and $ROOT_DIR/$APP_NAME-macOS.dmg"

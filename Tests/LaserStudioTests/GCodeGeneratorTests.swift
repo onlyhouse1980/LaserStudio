@@ -199,10 +199,101 @@ final class GCodeGeneratorTests: XCTestCase {
     func testSVGImportSupportsArcCommands() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("laserstudio-arc-test.svg")
         defer { try? FileManager.default.removeItem(at: url) }
-        try "<svg viewBox=\"0 0 100 100\"><path d=\"M0 0 A10 10 0 0 1 20 20\"/></svg>".write(to: url, atomically: true, encoding: .utf8)
+        try "<svg viewBox=\"0 0 100 100\"><path d=\"M0 0 A10 10 0 0 1 20 20 a10,10 0 0120,20\"/></svg>".write(to: url, atomically: true, encoding: .utf8)
         let imported = try SVGImporter.load(url)
         XCTAssertEqual(imported.count, 1)
         XCTAssertEqual(imported[0].kind, .path)
         XCTAssertGreaterThan(imported[0].pathPoints.count, 2)
+    }
+
+    private func importSVG(_ body: String, attributes: String = "viewBox=\"0 0 100 100\"") throws -> [DesignObject] {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("laserstudio-\(UUID().uuidString).svg")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try "<svg \(attributes)>\(body)</svg>".write(to: url, atomically: true, encoding: .utf8)
+        return try SVGImporter.load(url)
+    }
+
+    func testSVGDefaultsAllVectorLayersToLineModeLikeLightBurn() throws {
+        let imported = try importSVG("""
+            <rect x="10" y="10" width="30" height="30" fill="#ff0000"/>
+            <circle cx="70" cy="30" r="10" stroke="#0000ff" fill="none"/>
+            """)
+        XCTAssertEqual(imported.count, 2)
+        XCTAssertTrue(imported.allSatisfy { $0.layerMode == .line })
+        XCTAssertNotEqual(imported[0].color, imported[1].color)
+        XCTAssertNotNil(imported[0].groupID)
+        XCTAssertEqual(imported[0].groupID, imported[1].groupID)
+    }
+
+    func testSVGCombinesSameColorPathsIntoCompoundLayer() throws {
+        let imported = try importSVG("""
+            <rect x="0" y="0" width="80" height="80" stroke="#ff0000" fill="none"/>
+            <rect x="20" y="20" width="40" height="40" fill="#ff0000"/>
+            <circle cx="90" cy="90" r="5" stroke="#0000ff"/>
+            """)
+        XCTAssertEqual(imported.count, 2)
+        XCTAssertEqual(imported[0].resolvedSubpaths.count, 2)
+        XCTAssertEqual(imported[1].resolvedSubpaths.count, 1)
+    }
+
+    func testSVGStrokeColorTakesPrecedenceOverFillColor() throws {
+        let imported = try importSVG("""
+            <rect x="0" y="0" width="20" height="20" stroke="#0000ff" fill="#ff0000"/>
+            <rect x="30" y="0" width="20" height="20" fill="#0000ff"/>
+            """)
+        // Both map to Blue (Layer 01) because stroke takes precedence on the first rect.
+        XCTAssertEqual(imported.count, 1)
+        XCTAssertEqual(imported[0].resolvedSubpaths.count, 2)
+    }
+
+    func testSVGPreservesPhysicalMillimeterAndInchDimensions() throws {
+        let mmImported = try importSVG(
+            "<rect x=\"0\" y=\"0\" width=\"50\" height=\"25\"/>",
+            attributes: "width=\"50mm\" height=\"25mm\" viewBox=\"0 0 50 25\""
+        )
+        XCTAssertEqual(mmImported.count, 1)
+        XCTAssertEqual(mmImported[0].width, 50.0, accuracy: 0.01)
+        XCTAssertEqual(mmImported[0].height, 25.0, accuracy: 0.01)
+        XCTAssertEqual(mmImported[0].x, (400.0 - 50.0) / 2.0, accuracy: 0.01)
+        XCTAssertEqual(mmImported[0].y, (400.0 - 25.0) / 2.0, accuracy: 0.01)
+
+        let inchImported = try importSVG(
+            "<rect x=\"0\" y=\"0\" width=\"100\" height=\"100\"/>",
+            attributes: "width=\"2in\" height=\"2in\" viewBox=\"0 0 100 100\""
+        )
+        XCTAssertEqual(inchImported[0].width, 50.8, accuracy: 0.01)
+        XCTAssertEqual(inchImported[0].height, 50.8, accuracy: 0.01)
+    }
+
+    func testSVGSkipsDefsAndInstantiatesUseElements() throws {
+        let imported = try importSVG("""
+            <defs><rect id="box" x="0" y="0" width="20" height="20" stroke="#ff0000"/></defs>
+            <use href="#box" x="10" y="10"/>
+            <use xlink:href="#box" x="40" y="10"/>
+            """, attributes: "width=\"100mm\" height=\"100mm\" viewBox=\"0 0 100 100\"")
+        XCTAssertEqual(imported.count, 1)
+        XCTAssertEqual(imported[0].resolvedSubpaths.count, 2)
+        XCTAssertEqual(imported[0].width, 50.0, accuracy: 0.01)
+        XCTAssertEqual(imported[0].height, 20.0, accuracy: 0.01)
+    }
+
+    func testSVGTriangleFillRespectsPolygonContour() throws {
+        var imported = try importSVG("<polygon points=\"0,0 100,0 0,100\" fill=\"black\"/>",
+                                     attributes: "width=\"100mm\" height=\"100mm\" viewBox=\"0 0 100 100\"")
+        imported[0].layerMode = .fill
+        let shape = imported[0]
+        let code = try GCodeGenerator.make(objects: imported, material: "test", sMax: 1000, kerf: 5)
+        func value(_ prefix: Character, in line: String) -> Double? {
+            line.split(separator: " ").first { $0.first == prefix }.flatMap { Double($0.dropFirst()) }
+        }
+        let burns = code.filter { $0.hasPrefix("G1 ") }
+        XCTAssertFalse(burns.isEmpty)
+        // The bottom-right quarter of the bounding box lies outside the triangle and must stay unburned.
+        // G-code Y is flipped (machine Y = 400 - design Y).
+        let outsideBurns = burns.filter { line in
+            guard let x = value("X", in: line), let y = value("Y", in: line) else { return false }
+            return x > shape.x + shape.width * 0.75 && (400 - y) > shape.y + shape.height * 0.75
+        }
+        XCTAssertTrue(outsideBurns.isEmpty)
     }
 }

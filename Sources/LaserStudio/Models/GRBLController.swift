@@ -21,6 +21,15 @@ final class GRBLController: ObservableObject {
     @Published private(set) var homingSettingLoaded = true
     @Published private(set) var workspacePosition: (x: Double, y: Double)?
     @Published private(set) var controllerState: String?
+    /// Settings read from the controller after connecting with an auto-detect profile.
+    @Published private(set) var detected: DetectedMachine?
+    @Published private(set) var isDetecting = false
+
+    private var autoDetectOnConnect = false
+    private var writeHomingSetting = true
+    private var detectionAccumulator = DetectedMachine()
+    private var detectionReplies = 0
+    private var detectionTimer: DispatchWorkItem?
 
     private var fileDescriptor: Int32 = -1
     private var readSource: DispatchSourceRead?
@@ -46,15 +55,30 @@ final class GRBLController: ObservableObject {
             .sorted()
     }
 
+    /// Applies a machine preset. Auto-detect presets leave the settings unknown until the controller reports them.
+    func configure(with profile: LaserProfile) {
+        autoDetectOnConnect = profile.autoDetect
+        writeHomingSetting = profile.writeHomingSetting
+        sMax = profile.sMax
+        laserModeEnabled = profile.autoDetect ? nil : profile.laserMode
+        homingEnabled = profile.autoDetect ? nil : profile.homingEnabled
+        settingsLoaded = !profile.autoDetect
+        homingSettingLoaded = !profile.autoDetect
+        detected = nil
+    }
+
     func connect(to path: String, completion: @escaping (Result<Void, Error>) -> Void) {
         disconnect()
         lastError = nil
-        laserModeEnabled = true
-        homingEnabled = true
-        homingSettingLoaded = true
+        if autoDetectOnConnect {
+            laserModeEnabled = nil
+            homingEnabled = nil
+            settingsLoaded = false
+            homingSettingLoaded = false
+            detected = nil
+        }
         workspacePosition = nil
         controllerState = nil
-        settingsLoaded = true
         isConnecting = true
         onConnect = completion
         connectingPath = path
@@ -104,6 +128,9 @@ final class GRBLController: ObservableObject {
     }
 
     func disconnect() {
+        detectionTimer?.cancel()
+        detectionTimer = nil
+        isDetecting = false
         responseTimer?.cancel()
         responseTimer = nil
         manualResponseTimer?.cancel()
@@ -174,14 +201,70 @@ final class GRBLController: ObservableObject {
         // GRBL reports error:5 for $H when $22 is disabled. Run $H before
         // ordinary G-code so a startup homing alarm can be cleared safely.
         // Then define the front-left pull-off position as the app's G54 0,0.
-        manualLines = Self.workspaceOriginCommands(homingEnabled: homingEnabled)
+        manualLines = Self.workspaceOriginCommands(homingEnabled: homingEnabled, writeHomingSetting: writeHomingSetting)
         isSendingManualCommand = true
         sendNextManualLine()
         return true
     }
 
-    static func workspaceOriginCommands(homingEnabled: Bool) -> [String] {
-        homingEnabled ? ["$22=1", "$H", "M5", "G10 L20 P1 X0 Y0", "G90 G54 G0 X0 Y0"] : ["M5"]
+    /// Sends `$N=value` lines to the controller. Only used when the user explicitly asks to write settings.
+    @discardableResult
+    func writeSettings(_ commands: [String]) -> Bool {
+        guard isConnected, !hasActiveJob, !isSendingManualCommand, !isDetecting,
+              commands.allSatisfy({ $0.hasPrefix("$") && $0.contains("=") }) else { return false }
+        lastError = nil
+        manualLines = commands
+        isSendingManualCommand = true
+        sendNextManualLine()
+        return true
+    }
+
+    static func workspaceOriginCommands(homingEnabled: Bool, writeHomingSetting: Bool = true) -> [String] {
+        guard homingEnabled else { return ["M5"] }
+        return (writeHomingSetting ? ["$22=1"] : []) + ["$H", "M5", "G10 L20 P1 X0 Y0", "G90 G54 G0 X0 Y0"]
+    }
+
+    // MARK: Auto-detect
+
+    /// Asks the controller for its build info and settings (read-only) and fills in the machine values.
+    private func beginDetection() {
+        guard autoDetectOnConnect, isConnected, fileDescriptor >= 0 else { return }
+        isDetecting = true
+        detectionAccumulator = DetectedMachine()
+        detectionReplies = 0
+        let fd = fileDescriptor
+        ioQueue.async {
+            Self.writeRaw(fd: fd, data: Data("$I\n".utf8))
+            Self.writeRaw(fd: fd, data: Data("$$\n".utf8))
+        }
+        let timeout = DispatchWorkItem { [weak self] in
+            Task { @MainActor in self?.finishDetection() }
+        }
+        detectionTimer = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: timeout)
+    }
+
+    private func noteDetectionReply() {
+        detectionReplies += 1
+        if detectionReplies >= 2 { finishDetection() }
+    }
+
+    private func finishDetection() {
+        guard isDetecting else { return }
+        detectionTimer?.cancel()
+        detectionTimer = nil
+        isDetecting = false
+        guard !detectionAccumulator.isEmpty else {
+            lastError = "Could not read this controller's GRBL settings. Choose a preset or enter the machine settings manually."
+            return
+        }
+        let result = detectionAccumulator
+        detected = result
+        if let value = result.sMax, value > 0 { sMax = min(10000, value) }
+        laserModeEnabled = result.laserMode ?? false
+        homingEnabled = result.homingEnabled ?? false
+        settingsLoaded = true
+        homingSettingLoaded = true
     }
 
     private func readAvailable() {
@@ -206,6 +289,13 @@ final class GRBLController: ObservableObject {
     }
 
     func handleResponse(_ line: String) {
+        if isDetecting {
+            if line.hasPrefix("[VER:") {
+                detectionAccumulator.firmware = String(line.dropFirst(5).dropLast(line.hasSuffix("]") ? 1 : 0))
+            }
+            if detectionAccumulator.parse(setting: line) { return }
+            if line == "ok" || line.hasPrefix("error:") { noteDetectionReply(); return }
+        }
         if line.hasPrefix("<") { updatePosition(from: line) }
         if isConnecting && line.hasPrefix("<") {
             finishConnect(.success(()))
@@ -298,6 +388,7 @@ final class GRBLController: ObservableObject {
             pollTimer.setEventHandler { Self.writeRaw(fd: fd, data: Data([63])) }
             statusPollTimer = pollTimer
             pollTimer.resume()
+            beginDetection()
         case .failure(let error):
             lastError = error.localizedDescription
             if let source = readSource { source.cancel(); readSource = nil }

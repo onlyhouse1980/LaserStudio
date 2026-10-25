@@ -30,6 +30,10 @@ struct LaserStudioApp: App {
             CommandGroup(after: .importExport) {
                 Button("Export G-code…") { NotificationCenter.default.post(name: .exportJob, object: nil) }
                     .keyboardShortcut("e", modifiers: .command)
+                Button("Add Device…") { NotificationCenter.default.post(name: .addDevice, object: nil) }
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
+                Button("Burn Preview…") { NotificationCenter.default.post(name: .burnPreview, object: nil) }
+                    .keyboardShortcut("b", modifiers: .command)
             }
         }
     }
@@ -38,4 +42,6 @@ struct LaserStudioApp: App {
 extension Notification.Name {
     static let newProject = Notification.Name("newProject")
     static let exportJob = Notification.Name("exportJob")
+    static let burnPreview = Notification.Name("burnPreview")
+    static let addDevice = Notification.Name("addDevice")
 }
