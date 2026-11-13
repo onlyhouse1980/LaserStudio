@@ -104,7 +104,16 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .exportJob)) { _ in exportJob() }
         .sheet(isPresented: $showDevicePicker) { devicePicker }
         .sheet(isPresented: $showCameraPreview) { CameraPreviewSheet() }
-        .sheet(isPresented: $showBurnPreview) { BurnPreviewSheet(lines: previewGCode, sMax: grbl.sMax, machine: activeMachine) }
+        .sheet(isPresented: $showBurnPreview) {
+            BurnPreviewSheet(
+                lines: previewGCode,
+                sMax: grbl.sMax,
+                machine: activeMachine,
+                isConnected: grbl.isConnected
+            ) { resumedGCode, playheadTime in
+                startResumedJob(resumedGCode, playheadTime: playheadTime)
+            }
+        }
         .sheet(isPresented: Binding(
             get: { cutSettingsLayerID != nil && objects.contains(where: { $0.id == cutSettingsLayerID }) },
             set: { if !$0 { cutSettingsLayerID = nil } }
@@ -1273,6 +1282,23 @@ struct ContentView: View {
     private func cancelJob() {
         grbl.stopJob()
         status = "Job cancelled · queued moves cleared"
+    }
+
+    private func startResumedJob(_ gcode: [String], playheadTime: Double) {
+        guard grbl.isConnected else {
+            status = "Connect the laser before starting a job"
+            return
+        }
+        if grbl.hasActiveJob {
+            grbl.stopJob()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                self.grbl.sendJob(gcode)
+                self.status = String(format: "Burning from playhead (%@) · %d lines", BurnPreviewModel.format(playheadTime), gcode.count)
+            }
+        } else {
+            grbl.sendJob(gcode)
+            status = String(format: "Burning from playhead (%@) · %d lines", BurnPreviewModel.format(playheadTime), gcode.count)
+        }
     }
 
     private func makeGCode(requireLaserMode: Bool) throws -> [String] {

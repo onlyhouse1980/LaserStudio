@@ -179,6 +179,7 @@ struct DesignObject: Identifiable, Equatable {
     var pathSubpaths: [PathSubpath]
     var imageData: Data?
     var imagePixels: Data?
+    var imageAlpha: Data?
     var imagePixelWidth: Int
     var imagePixelHeight: Int
     var imageInverted: Bool
@@ -250,6 +251,7 @@ struct DesignObject: Identifiable, Equatable {
         pathSubpaths: [PathSubpath] = [],
         imageData: Data? = nil,
         imagePixels: Data? = nil,
+        imageAlpha: Data? = nil,
         imagePixelWidth: Int = 0,
         imagePixelHeight: Int = 0,
         imageInverted: Bool = false,
@@ -333,6 +335,7 @@ struct DesignObject: Identifiable, Equatable {
         }
         self.imageData = imageData
         self.imagePixels = imagePixels
+        self.imageAlpha = imageAlpha
         self.imagePixelWidth = imagePixelWidth
         self.imagePixelHeight = imagePixelHeight
         self.imageInverted = imageInverted

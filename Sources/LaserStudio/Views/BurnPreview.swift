@@ -8,12 +8,19 @@ struct PreviewSegment {
     var burn: Bool               // laser on while moving
     var feed: Double             // mm/min
     var power: Double            // 0...1
+    var rawPower: Double = 0     // actual G-code S value
+    var laserCmd: String = "M3"  // M3 or M4
+    var airAssist: Bool = false  // M8 active
+    var lineIndex: Int = 0       // index in source lines array
+    var z: Double? = nil         // Z coordinate if specified
 }
 
 /// Parses the exact G-code that would be sent to the machine so the preview matches the real job.
 final class BurnPreviewModel {
     static let chunkSize = 256
 
+    let machine: LaserProfile
+    private(set) var lines: [String] = []
     private(set) var segments: [PreviewSegment] = []
     private(set) var cumulativeEnd: [Double] = []   // seconds at the end of each segment
     private(set) var plannedBurn = Path()
@@ -24,22 +31,40 @@ final class BurnPreviewModel {
     var totalTime: Double { cumulativeEnd.last ?? 0 }
 
     init(lines: [String], sMax: Int, machine: LaserProfile) {
+        self.machine = machine
+        self.lines = lines
         let workspace = machine.workspaceHeight
         var x = 0.0, y = 0.0, feed = machine.maxFeedRate, s = 0.0
         var rapid = true, laserOn = false
+        var currentLaserCmd = "M3"
+        var currentAirAssist = false
+        var currentZ: Double? = nil
         var chunk = Path()
         var time = 0.0
 
-        for raw in lines {
+        for (lineIdx, raw) in lines.enumerated() {
             let line = raw.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
             var newX = x, newY = y, moved = false
             for word in line.split(whereSeparator: { $0 == " " || $0 == "\t" }) {
-                guard let letter = word.first, let value = Double(word.dropFirst()) else { continue }
+                guard let letter = word.first else { continue }
+                if letter == "M" {
+                    if let value = Double(word.dropFirst()) {
+                        if value == 3 { laserOn = true; currentLaserCmd = "M3" }
+                        else if value == 4 { laserOn = true; currentLaserCmd = "M4" }
+                        else if value == 5 { laserOn = false; s = 0 }
+                        else if value == 8 { currentAirAssist = true }
+                        else if value == 9 { currentAirAssist = false }
+                    }
+                    continue
+                }
+                guard let value = Double(word.dropFirst()) else { continue }
                 switch letter {
-                case "G": if value == 0 { rapid = true } else if value == 1 { rapid = false }
-                case "M": if value == 3 || value == 4 { laserOn = true } else if value == 5 { laserOn = false; s = 0 }
+                case "G":
+                    if value == 0 { rapid = true }
+                    else if value == 1 { rapid = false }
                 case "X": newX = value; moved = true
                 case "Y": newY = value; moved = true
+                case "Z": currentZ = value
                 case "F": feed = value
                 case "S": s = value
                 default: break
@@ -48,8 +73,17 @@ final class BurnPreviewModel {
             guard moved, newX != x || newY != y else { x = newX; y = newY; continue }
             let burn = !rapid && laserOn && s > 0
             let speed = rapid ? machine.maxFeedRate : max(1, feed)
-            let segment = PreviewSegment(x0: x, y0: workspace - y, x1: newX, y1: workspace - newY,
-                                         burn: burn, feed: speed, power: min(1, s / Double(max(1, sMax))))
+            let segment = PreviewSegment(
+                x0: x, y0: workspace - y,
+                x1: newX, y1: workspace - newY,
+                burn: burn, feed: speed,
+                power: min(1, s / Double(max(1, sMax))),
+                rawPower: s,
+                laserCmd: currentLaserCmd,
+                airAssist: currentAirAssist,
+                lineIndex: lineIdx,
+                z: currentZ
+            )
             let length = hypot(newX - x, newY - y)
             time += length / speed * 60
             segments.append(segment)
@@ -80,12 +114,87 @@ final class BurnPreviewModel {
     }
 
     func segmentStart(_ index: Int) -> Double { index == 0 ? 0 : cumulativeEnd[index - 1] }
+
+    static func format(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    /// Generates G-code to safely resume burning from the playhead timestamp.
+    func gcodeStartingFrom(time: Double) -> [String] {
+        guard !segments.isEmpty else { return lines }
+        let index = index(at: time)
+        if index == 0 && time <= 0.001 {
+            return lines
+        }
+        if index >= segments.count {
+            return ["M5"]
+        }
+
+        let seg = segments[index]
+        let start = segmentStart(index)
+        let span = cumulativeEnd[index] - start
+        let fraction = span > 0 ? min(1.0, max(0.0, (time - start) / span)) : 0.0
+
+        let headX = seg.x0 + (seg.x1 - seg.x0) * fraction
+        let headY = seg.y0 + (seg.y1 - seg.y0) * fraction
+        let machX = headX
+        let machY = machine.workspaceHeight - headY
+        let machTargetY = machine.workspaceHeight - seg.y1
+
+        var result: [String] = [
+            "; LaserStudio · Resuming job from preview playhead",
+            String(format: "; Starting at move %d of %d · X%.2f Y%.2f (%.1f%%)", index + 1, segments.count, machX, machY, (time / max(0.001, totalTime)) * 100),
+            "G21",
+            "G90",
+            "G94",
+            "M5"
+        ]
+
+        if let z = seg.z, abs(z) > 0.0001 {
+            result.append(String(format: "G0 Z%.3f", z))
+        }
+
+        if seg.airAssist {
+            result.append("M8")
+        }
+
+        // Safe rapid move to playhead location with laser turned off
+        result.append(String(format: "G0 X%.3f Y%.3f", machX, machY))
+
+        if fraction < 0.999 && hypot(seg.x1 - headX, seg.y1 - headY) > 0.01 {
+            if seg.burn {
+                let power = Int(seg.rawPower.rounded())
+                result.append("\(seg.laserCmd) S0")
+                result.append(String(format: "G1 X%.3f Y%.3f F%.1f S%d", seg.x1, machTargetY, seg.feed, power))
+            } else {
+                result.append(String(format: "G0 X%.3f Y%.3f", seg.x1, machTargetY))
+            }
+        } else if seg.burn {
+            result.append("\(seg.laserCmd) S0")
+        }
+
+        let nextLineIndex = seg.lineIndex + 1
+        if nextLineIndex < lines.count {
+            result.append(contentsOf: lines[nextLineIndex..<lines.count])
+        }
+        if result.last != "M5" {
+            result.append("M5")
+        }
+        if seg.airAssist && !result.suffix(10).contains("M9") {
+            result.append("M9")
+        }
+        return result
+    }
 }
 
 struct BurnPreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
-    private let model: BurnPreviewModel
-    private let machine: LaserProfile
+    let model: BurnPreviewModel
+    let machine: LaserProfile
+    var isConnected: Bool = true
+    var onStartAtPlayhead: (([String], Double) -> Void)? = nil
+
     private let timer = Timer.publish(every: 1.0 / 30.0, on: .main, in: .common).autoconnect()
 
     @State private var time = 0.0
@@ -93,10 +202,20 @@ struct BurnPreviewSheet: View {
     @State private var previewSeconds = 20.0
     @State private var showTravel = true
     @State private var showPlanned = true
+    @State private var alertMessage: String?
+    @State private var showAlert = false
 
-    init(lines: [String], sMax: Int, machine: LaserProfile) {
+    init(
+        lines: [String],
+        sMax: Int,
+        machine: LaserProfile,
+        isConnected: Bool = true,
+        onStartAtPlayhead: (([String], Double) -> Void)? = nil
+    ) {
         self.machine = machine
-        model = BurnPreviewModel(lines: lines, sMax: sMax, machine: machine)
+        self.isConnected = isConnected
+        self.onStartAtPlayhead = onStartAtPlayhead
+        self.model = BurnPreviewModel(lines: lines, sMax: sMax, machine: machine)
     }
 
     var body: some View {
@@ -107,7 +226,7 @@ struct BurnPreviewSheet: View {
             Divider().opacity(0.4)
             controls
         }
-        .frame(minWidth: 820, minHeight: 760)
+        .frame(minWidth: 840, minHeight: 760)
         .preferredColorScheme(.dark)
         .onReceive(timer) { _ in
             guard playing, model.totalTime > 0 else { return }
@@ -121,10 +240,26 @@ struct BurnPreviewSheet: View {
             Label("BURN PREVIEW", systemImage: "flame.fill")
                 .font(.system(size: 12, weight: .bold, design: .rounded)).tracking(1.2).foregroundStyle(.orange)
             Spacer()
-            stat("Est. time", Self.format(model.totalTime))
+            stat("Est. time", BurnPreviewModel.format(model.totalTime))
             stat("Burn", String(format: "%.0f mm", model.burnLength))
             stat("Travel", String(format: "%.0f mm", model.travelLength))
             stat("Moves", "\(model.segments.count)")
+
+            Button {
+                startAtPlayhead()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "flame.fill")
+                    Text("Start at Playhead")
+                }
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.red, in: RoundedRectangle(cornerRadius: 6))
+            }
+            .help("Start burning directly from the current playhead position (\(BurnPreviewModel.format(time)))")
+
             Button("Close") { dismiss() }.keyboardShortcut(.escape)
         }
         .padding(.horizontal, 18).frame(height: 48)
@@ -202,7 +337,7 @@ struct BurnPreviewSheet: View {
                        with: .color(laserOn ? .white : glow))
             var cross = Path()
             cross.move(to: CGPoint(x: head.x - radius * 1.8, y: head.y)); cross.addLine(to: CGPoint(x: head.x + radius * 1.8, y: head.y))
-            cross.move(to: CGPoint(x: head.x, y: head.y - radius * 1.8)); cross.addLine(to: CGPoint(x: head.x, y: head.y + radius * 1.8))
+            cross.move(to: CGPoint(x: head.x, y: head.y - radius * 1.8)); cross.addLine(to: CGPoint(x: head.x + radius * 1.8, y: head.y))
             layer.stroke(cross, with: .color(glow), lineWidth: hairline)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -247,8 +382,23 @@ struct BurnPreviewSheet: View {
                 Slider(value: $time, in: 0...max(0.001, model.totalTime)) { editing in
                     if editing { playing = false }
                 }.tint(.orange)
-                Text("\(Self.format(time)) / \(Self.format(model.totalTime))")
+                Text("\(BurnPreviewModel.format(time)) / \(BurnPreviewModel.format(model.totalTime))")
                     .font(.system(size: 11, design: .monospaced)).frame(width: 130, alignment: .trailing)
+
+                Button {
+                    startAtPlayhead()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "flame.fill")
+                        Text("Start Laser Here")
+                    }
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.red, in: RoundedRectangle(cornerRadius: 6))
+                }
+                .help("Start burning directly from the current playhead position (\(BurnPreviewModel.format(time)))")
             }
             HStack(spacing: 18) {
                 Picker("Playback", selection: $previewSeconds) {
@@ -260,11 +410,37 @@ struct BurnPreviewSheet: View {
                 Toggle("Show travel moves", isOn: $showTravel).toggleStyle(.checkbox)
                 Toggle("Show planned burn", isOn: $showPlanned).toggleStyle(.checkbox)
                 Spacer()
-                Text("Preview of the exact G-code. Time is an estimate; it ignores acceleration.")
-                    .font(.system(size: 9)).foregroundStyle(.secondary)
+                Text("Scrub slider to any point to start or resume burning at that location.")
+                    .font(.system(size: 10, weight: .medium)).foregroundStyle(.orange.opacity(0.85))
             }.font(.system(size: 11))
         }
         .buttonStyle(.borderless).padding(14)
+        .alert("Burn Preview", isPresented: $showAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(alertMessage ?? "")
+        }
+    }
+
+    private func startAtPlayhead() {
+        guard isConnected else {
+            alertMessage = "Laser is not connected. Connect the machine via USB before starting a job."
+            showAlert = true
+            return
+        }
+        guard !model.segments.isEmpty else {
+            alertMessage = "There are no moves to burn."
+            showAlert = true
+            return
+        }
+        if time >= model.totalTime && model.totalTime > 0.05 {
+            alertMessage = "The playhead is at the end of the preview. Move the slider back to where you want to start burning."
+            showAlert = true
+            return
+        }
+        let resumed = model.gcodeStartingFrom(time: time)
+        onStartAtPlayhead?(resumed, time)
+        dismiss()
     }
 
     private func stat(_ title: String, _ value: String) -> some View {
@@ -279,10 +455,5 @@ struct BurnPreviewSheet: View {
             RoundedRectangle(cornerRadius: 1).fill(color).frame(width: 16, height: 3)
             Text(text)
         }
-    }
-
-    private static func format(_ seconds: Double) -> String {
-        let total = Int(seconds.rounded())
-        return String(format: "%d:%02d", total / 60, total % 60)
     }
 }

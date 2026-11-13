@@ -296,4 +296,34 @@ final class GCodeGeneratorTests: XCTestCase {
         }
         XCTAssertTrue(outsideBurns.isEmpty)
     }
+
+    func testBurnPreviewModelStartsJobFromPlayhead() throws {
+        let box = DesignObject(kind: .rectangle, x: 20, y: 20, width: 60, height: 60, label: "Box", color: .red)
+        let lines = try GCodeGenerator.make(objects: [box], material: "Wood", sMax: 1000, kerf: 0.1, machine: .ray5)
+        let model = BurnPreviewModel(lines: lines, sMax: 1000, machine: .ray5)
+
+        XCTAssertFalse(model.segments.isEmpty)
+        XCTAssertGreaterThan(model.totalTime, 0)
+
+        // Starting from t = 0 should return the full original G-code
+        let fullResumed = model.gcodeStartingFrom(time: 0)
+        XCTAssertEqual(fullResumed, lines)
+
+        // Starting from halfway through the job
+        let midTime = model.totalTime / 2.0
+        let midResumed = model.gcodeStartingFrom(time: midTime)
+        XCTAssertFalse(midResumed.isEmpty)
+        XCTAssertTrue(midResumed.contains("G21"))
+        XCTAssertTrue(midResumed.contains("G90"))
+        XCTAssertTrue(midResumed.contains("G94"))
+        XCTAssertTrue(midResumed.contains("M5"))
+        XCTAssertTrue(midResumed.contains(where: { $0.hasPrefix("G0 X") }), "Should contain rapid move to playhead location")
+        XCTAssertTrue(midResumed.contains(where: { $0.hasPrefix("G1 X") }), "Should contain subsequent burning moves")
+        XCTAssertEqual(midResumed.last, "M5", "Resumed G-code must end with M5 laser off")
+        XCTAssertLessThan(midResumed.count, lines.count + 5, "Resumed G-code should skip previously executed moves")
+
+        // Starting at or past totalTime should safely return M5
+        let endResumed = model.gcodeStartingFrom(time: model.totalTime + 1.0)
+        XCTAssertEqual(endResumed, ["M5"])
+    }
 }

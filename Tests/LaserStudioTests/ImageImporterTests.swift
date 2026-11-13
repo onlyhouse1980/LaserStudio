@@ -35,6 +35,67 @@ final class ImageImporterTests: XCTestCase {
         }
     }
 
+    func testPNGKeepsTransparency() throws {
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 4,
+                                      bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                      isPlanar: false, colorSpaceName: .deviceRGB,
+                                      bytesPerRow: 16, bitsPerPixel: 32)!
+        if let data = bitmap.bitmapData {
+            for i in 0..<16 {
+                data[i * 4 + 0] = 0
+                data[i * 4 + 1] = 0
+                data[i * 4 + 2] = 0
+                data[i * 4 + 3] = 0
+            }
+            // 2x2 opaque black in center: (1,1), (2,1), (1,2), (2,2)
+            for y in 1...2 {
+                for x in 1...2 {
+                    let idx = (y * 4 + x) * 4
+                    data[idx + 0] = 0
+                    data[idx + 1] = 0
+                    data[idx + 2] = 0
+                    data[idx + 3] = 255
+                }
+            }
+        }
+
+        let encoded = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try encoded.write(to: url)
+
+        let object = try ImageImporter.load(url)
+        XCTAssertEqual(object.kind, .image)
+        XCTAssertNotNil(object.imageAlpha, "Imported PNG must preserve alpha data")
+        if let alpha = object.imageAlpha {
+            XCTAssertEqual(alpha.count, 16)
+            // (0,0) was clear -> alpha should be 0
+            XCTAssertEqual(alpha[0], 0, "Transparent corner must have alpha 0")
+            // (1,1) was black -> alpha should be 255
+            XCTAssertEqual(alpha[1 * 4 + 1], 255, "Opaque pixel must have alpha 255")
+        }
+
+        // Preview PNG in object.imageData must also contain transparency
+        let previewData = try XCTUnwrap(object.imageData)
+        let previewRep = try XCTUnwrap(NSBitmapImageRep(data: previewData))
+        XCTAssertTrue(previewRep.hasAlpha, "Generated preview PNG must have alpha channel")
+        let cornerColor = previewRep.colorAt(x: 0, y: 0)
+        XCTAssertEqual(cornerColor?.alphaComponent ?? 1.0, 0.0, accuracy: 0.05, "Corner pixel in preview PNG must be transparent")
+
+        // processedNSImage must also keep transparency
+        let processedImage = try XCTUnwrap(ImageImporter.processedNSImage(for: object))
+        let processedRep = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(processedImage.tiffRepresentation)))
+        let processedCornerAlpha = processedRep.colorAt(x: 0, y: 0)?.alphaComponent ?? 1.0
+        XCTAssertEqual(processedCornerAlpha, 0.0, accuracy: 0.05, "Processed image must keep corner transparent")
+
+        // GCode generation should burn opaque pixels and skip transparent pixels
+        let gcode = try GCodeGenerator.make(objects: [object], material: "Wood", sMax: 1000, kerf: 0.1, machine: .ray5)
+        XCTAssertFalse(gcode.isEmpty)
+        let powerCommands = gcode.filter { $0.contains(" S") && !$0.contains(" S0") }
+        XCTAssertFalse(powerCommands.isEmpty, "Opaque portion must generate burn commands")
+    }
+
     func testLightBurnImageDitherModesAndConvertToBitmap() throws {
         let rect = DesignObject(
             kind: .rectangle,

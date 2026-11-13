@@ -925,6 +925,7 @@ struct ManualView: View {
                 "• **Infinite Magnification**: Scroll the mouse wheel or pinch on the trackpad to zoom smoothly toward the cursor with **no upper zoom cap**. The millimeter grid automatically subdivides by powers of 10 (`10 mm` → `1 mm` → `0.1 mm` → `0.01 mm` → …) as you zoom in.",
                 "• **Panning**: Hold **Space + Left-Drag**, use a two-finger trackpad scroll, or drag with the middle mouse button. Press `⌘0` to reset zoom to the page.",
                 "• **Burn Preview (`⌘B`)**: Simulates rapid travel moves (`G0`) and laser burn moves (`G1`), showing estimated job duration and playback scrubbing.",
+                "• **Start from Playhead / Resume Job**: Scrub the timeline slider to any position in the Burn Preview, then click **Start Laser at Playhead** (or **Start Laser Here**) to begin burning from that exact location in the project. The laser safely rapids with laser off to the playhead coordinates and resumes the remaining moves without having to re-burn finished parts.",
                 "• **Start / Pause / Stop / Export**: Press **Start (`⇧⌘↩`)** to stream G-code over USB, or **Export (`⌘E`)** to save `.gcode`."
             ]
         ),

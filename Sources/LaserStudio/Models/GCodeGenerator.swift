@@ -257,6 +257,7 @@ enum GCodeGenerator {
             abs(object.imageGamma - 1.0) > 0.01 ||
             object.imageEnhanceRadius > 0.1
         let data = usesAdjustedPipeline ? ImageImporter.processedGrayscale(for: object) : [UInt8](pixels)
+        let alphaBytes = object.imageAlpha.map { [UInt8]($0) }
         let laserCmd = object.constantPower ? "M3" : "M4"
         var lines: [String] = []
         lines.reserveCapacity(rows * 4 + min(rows * columns, 300_000))
@@ -273,28 +274,39 @@ enum GCodeGenerator {
             while column < columns {
                 let sourceColumn = reverse ? columns - column - 1 : column
                 let sourceX = min(imageWidth - 1, Int((Double(sourceColumn) + 0.5) / Double(columns) * Double(imageWidth)))
-                let sourceGray = Double(data[sourceY * imageWidth + sourceX])
+                let sourceIndex = sourceY * imageWidth + sourceX
+                let isTransparent = alphaBytes != nil && sourceIndex < alphaBytes!.count && alphaBytes![sourceIndex] == 0
+                let sourceGray = Double(data[sourceIndex])
                 let gray = usesAdjustedPipeline ? sourceGray : (object.imageInverted ? 255 - sourceGray : sourceGray)
-                let darkness = 1 - gray / 255
+                let darkness = isTransparent ? 0.0 : (1.0 - gray / 255.0)
                 let targetPower: Int
-                if object.variablePower && object.imageDitherMode == .grayscale {
+                if isTransparent {
+                    targetPower = 0
+                } else if object.variablePower && object.imageDitherMode == .grayscale {
                     targetPower = Int((Double(maxPower) * darkness).rounded())
                 } else {
                     targetPower = darkness >= 0.5 ? maxPower : 0
                 }
-                let targetFeed = Int((lowSpeed + (highSpeed - lowSpeed) * (gray / 255)).rounded())
+                let targetFeed = Int((lowSpeed + (highSpeed - lowSpeed) * (gray / 255.0)).rounded())
 
                 var runEnd = column + 1
                 while runEnd < columns {
                     let runSourceColumn = reverse ? columns - runEnd - 1 : runEnd
                     let runSourceX = min(imageWidth - 1, Int((Double(runSourceColumn) + 0.5) / Double(columns) * Double(imageWidth)))
-                    let sourceRunGray = Double(data[sourceY * imageWidth + runSourceX])
+                    let runSourceIndex = sourceY * imageWidth + runSourceX
+                    let runIsTransparent = alphaBytes != nil && runSourceIndex < alphaBytes!.count && alphaBytes![runSourceIndex] == 0
+                    let sourceRunGray = Double(data[runSourceIndex])
                     let runGray = usesAdjustedPipeline ? sourceRunGray : (object.imageInverted ? 255 - sourceRunGray : sourceRunGray)
-                    let runDarkness = 1 - runGray / 255
-                    let runPower = (object.variablePower && object.imageDitherMode == .grayscale)
-                        ? Int((Double(maxPower) * runDarkness).rounded())
-                        : (runDarkness >= 0.5 ? maxPower : 0)
-                    let runFeed = Int((lowSpeed + (highSpeed - lowSpeed) * (runGray / 255)).rounded())
+                    let runDarkness = runIsTransparent ? 0.0 : (1.0 - runGray / 255.0)
+                    let runPower: Int
+                    if runIsTransparent {
+                        runPower = 0
+                    } else if object.variablePower && object.imageDitherMode == .grayscale {
+                        runPower = Int((Double(maxPower) * runDarkness).rounded())
+                    } else {
+                        runPower = runDarkness >= 0.5 ? maxPower : 0
+                    }
+                    let runFeed = Int((lowSpeed + (highSpeed - lowSpeed) * (runGray / 255.0)).rounded())
                     guard runPower == targetPower, runFeed == targetFeed else { break }
                     runEnd += 1
                 }

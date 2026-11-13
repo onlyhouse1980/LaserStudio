@@ -70,12 +70,29 @@ enum ImageTracer {
                     }
                 }
             }
+            if let alphaBytes = image.imageAlpha.map({ [UInt8]($0) }) {
+                for y in 0..<height {
+                    let sourceY = min(image.imagePixelHeight - 1, y * image.imagePixelHeight / height)
+                    for x in 0..<width {
+                        let sourceX = min(image.imagePixelWidth - 1, x * image.imagePixelWidth / width)
+                        let sourceIndex = sourceY * image.imagePixelWidth + sourceX
+                        if sourceIndex < alphaBytes.count && alphaBytes[sourceIndex] < 64 {
+                            mask[y * width + x] = 0
+                        }
+                    }
+                }
+            }
         } else {
+            let alphaBytes = image.imageAlpha.map { [UInt8]($0) }
             for y in minYCrop..<maxYCrop {
                 let sourceY = min(image.imagePixelHeight - 1, y * image.imagePixelHeight / height)
                 for x in minXCrop..<maxXCrop {
                     let sourceX = min(image.imagePixelWidth - 1, x * image.imagePixelWidth / width)
-                    let value = Double(source[sourceY * image.imagePixelWidth + sourceX])
+                    let sourceIndex = sourceY * image.imagePixelWidth + sourceX
+                    if let alphaBytes, sourceIndex < alphaBytes.count, alphaBytes[sourceIndex] < 64 {
+                        continue
+                    }
+                    let value = Double(source[sourceIndex])
                     let gray = options.inverted ? 255 - value : value
                     if gray >= lowCutoff && gray <= highThreshold {
                         mask[y * width + x] = 1

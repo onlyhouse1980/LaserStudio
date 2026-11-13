@@ -1744,22 +1744,16 @@ struct CanvasArea: View {
                     abs(object.imageBrightness) > 0.01 ||
                     abs(object.imageContrast) > 0.01 ||
                     abs(object.imageGamma - 1.0) > 0.01 ||
-                    object.imageEnhanceRadius > 0.1
+                    object.imageEnhanceRadius > 0.1 ||
+                    object.imageInverted
                 if hasProcessing, let processed = ImageImporter.processedNSImage(for: object) {
                     Image(nsImage: processed).resizable().interpolation(.none)
                         .frame(width: w, height: h).clipped()
                         .overlay(Rectangle().stroke(object.color, lineWidth: selected ? 2 : 1.2))
                 } else if let data = object.imageData, let image = NSImage(data: data) {
-                    if object.imageInverted {
-                        Image(nsImage: image).resizable().interpolation(.high)
-                            .saturation(0).colorInvert()
-                            .frame(width: w, height: h).clipped()
-                            .overlay(Rectangle().stroke(object.color, lineWidth: selected ? 2 : 1.2))
-                    } else {
-                        Image(nsImage: image).resizable().interpolation(.high)
-                            .frame(width: w, height: h).clipped()
-                            .overlay(Rectangle().stroke(object.color, lineWidth: selected ? 2 : 1.2))
-                    }
+                    Image(nsImage: image).resizable().interpolation(.high)
+                        .frame(width: w, height: h).clipped()
+                        .overlay(Rectangle().stroke(object.color, lineWidth: selected ? 2 : 1.2))
                 } else {
                     Rectangle().fill(Color.white.opacity(0.08))
                         .overlay(Image(systemName: "photo").foregroundStyle(object.color))

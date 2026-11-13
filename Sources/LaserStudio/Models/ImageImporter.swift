@@ -16,7 +16,13 @@ enum ImageImporter {
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: maximumDimension
         ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+        let image: CGImage
+        if let direct = CGImageSourceCreateImageAtIndex(source, 0, nil),
+           direct.width <= maximumDimension && direct.height <= maximumDimension {
+            image = direct
+        } else if let thumb = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+            image = thumb
+        } else {
             throw ImportError.unsupportedImage
         }
 
@@ -73,7 +79,7 @@ enum ImageImporter {
             throw ImportError.unsupportedImage
         }
         let bytesPerRow = width * 4
-        var rgba = [UInt8](repeating: 255, count: bytesPerRow * height)
+        var rgba = [UInt8](repeating: 0, count: bytesPerRow * height)
         let normalizedImage = rgba.withUnsafeMutableBytes { buffer -> CGImage? in
             guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
                                           bitsPerComponent: 8, bytesPerRow: bytesPerRow,
@@ -88,15 +94,31 @@ enum ImageImporter {
         guard let normalizedImage else { throw ImportError.unsupportedImage }
 
         var grayscale = Data(count: width * height)
-        grayscale.withUnsafeMutableBytes { output in
-            guard let destination = output.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-            for pixelIndex in 0..<(width * height) {
-                let sourceIndex = pixelIndex * 4
-                let alpha = Double(rgba[sourceIndex + 3]) / 255
-                let luminance = 0.2126 * Double(rgba[sourceIndex]) +
-                                0.7152 * Double(rgba[sourceIndex + 1]) +
-                                0.0722 * Double(rgba[sourceIndex + 2])
-                destination[pixelIndex] = UInt8(min(255, max(0, (luminance + 255 * (1 - alpha)).rounded())))
+        var alphaMask = Data(count: width * height)
+        var hasTransparency = false
+
+        grayscale.withUnsafeMutableBytes { grayOutput in
+            alphaMask.withUnsafeMutableBytes { alphaOutput in
+                guard let destGray = grayOutput.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                      let destAlpha = alphaOutput.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+                for pixelIndex in 0..<(width * height) {
+                    let sourceIndex = pixelIndex * 4
+                    let alphaByte = rgba[sourceIndex + 3]
+                    destAlpha[pixelIndex] = alphaByte
+                    if alphaByte < 255 {
+                        hasTransparency = true
+                    }
+                    if alphaByte == 0 {
+                        destGray[pixelIndex] = 255
+                    } else {
+                        let a = Double(alphaByte) / 255.0
+                        let r = min(255.0, Double(rgba[sourceIndex]) / a)
+                        let g = min(255.0, Double(rgba[sourceIndex + 1]) / a)
+                        let b = min(255.0, Double(rgba[sourceIndex + 2]) / a)
+                        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                        destGray[pixelIndex] = UInt8(min(255, max(0, (luminance * a + 255.0 * (1.0 - a)).rounded())))
+                    }
+                }
             }
         }
 
@@ -134,6 +156,7 @@ enum ImageImporter {
             layerMode: .fill,
             imageData: preview,
             imagePixels: grayscale,
+            imageAlpha: hasTransparency ? alphaMask : nil,
             imagePixelWidth: width,
             imagePixelHeight: height,
             minimumSpeed: 1000,
@@ -240,6 +263,7 @@ enum ImageImporter {
             return src
         }
 
+        let alphaBytes = object.imageAlpha.map { [UInt8]($0) }
         let brightnessDelta = (object.imageBrightness / 100.0) * 255.0
         let contrastVal = max(-99.0, min(99.0, object.imageContrast)) * 2.55
         let contrastFactor = (259.0 * (contrastVal + 255.0)) / (255.0 * (259.0 - contrastVal))
@@ -257,7 +281,11 @@ enum ImageImporter {
 
         var buf = [Double](repeating: 0, count: w * h)
         for i in 0..<(w * h) {
-            buf[i] = Double(lut[Int(src[i])])
+            if let alphaBytes, i < alphaBytes.count, alphaBytes[i] == 0 {
+                buf[i] = 255.0
+            } else {
+                buf[i] = Double(lut[Int(src[i])])
+            }
         }
 
         let radius = Int(min(10, max(0, object.imageEnhanceRadius.rounded())))
@@ -284,11 +312,21 @@ enum ImageImporter {
             }
         }
 
+        var result: [UInt8]
         if object.imagePassThrough || object.imageDitherMode == .grayscale {
-            return buf.map { UInt8(min(255, max(0, Int($0.rounded())))) }
+            result = buf.map { UInt8(min(255, max(0, Int($0.rounded())))) }
+        } else {
+            result = applyDither(buf, width: w, height: h, mode: object.imageDitherMode)
         }
 
-        return applyDither(buf, width: w, height: h, mode: object.imageDitherMode)
+        if let alphaBytes {
+            for i in 0..<min(result.count, alphaBytes.count) {
+                if alphaBytes[i] == 0 {
+                    result[i] = 255
+                }
+            }
+        }
+        return result
     }
 
     static func applyDither(_ input: [Double], width w: Int, height h: Int, mode: ImageDitherMode) -> [UInt8] {
@@ -401,14 +439,41 @@ enum ImageImporter {
         let w = object.imagePixelWidth
         let h = object.imagePixelHeight
         guard w > 0, h > 0 else { return nil }
-        var gray = processedGrayscale(for: object)
+        let gray = processedGrayscale(for: object)
         guard gray.count >= w * h else { return nil }
-        guard let ctx = CGContext(
-            data: &gray, width: w, height: h,
-            bitsPerComponent: 8, bytesPerRow: w,
-            space: CGColorSpaceCreateDeviceGray(),
-            bitmapInfo: CGImageAlphaInfo.none.rawValue
-        ), let cgImage = ctx.makeImage() else { return nil }
+        let alphaBytes = object.imageAlpha.map { [UInt8]($0) }
+
+        let bytesPerRow = w * 4
+        var rgba = [UInt8](repeating: 0, count: bytesPerRow * h)
+        for i in 0..<(w * h) {
+            let g = gray[i]
+            let a = alphaBytes != nil && i < alphaBytes!.count ? alphaBytes![i] : 255
+            let dst = i * 4
+            if a == 0 {
+                rgba[dst] = 0
+                rgba[dst + 1] = 0
+                rgba[dst + 2] = 0
+                rgba[dst + 3] = 0
+            } else {
+                let alphaFactor = Double(a) / 255.0
+                let premul = UInt8(min(255, max(0, (Double(g) * alphaFactor).rounded())))
+                rgba[dst] = premul
+                rgba[dst + 1] = premul
+                rgba[dst + 2] = premul
+                rgba[dst + 3] = a
+            }
+        }
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        let cgImage = rgba.withUnsafeMutableBytes { buf -> CGImage? in
+            guard let ctx = CGContext(
+                data: buf.baseAddress, width: w, height: h,
+                bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+            ) else { return nil }
+            return ctx.makeImage()
+        }
+        guard let cgImage else { return nil }
         return NSImage(cgImage: cgImage, size: NSSize(width: w, height: h))
     }
 
